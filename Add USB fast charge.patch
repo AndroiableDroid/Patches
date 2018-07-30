@@ -1,0 +1,246 @@
+From 40a9d4fab8542854603de5fe88b1a78cbe01614b Mon Sep 17 00:00:00 2001
+From: engstk <eng.stk@sapo.pt>
+Date: Fri, 1 Apr 2016 11:54:15 +0500
+Subject: [PATCH] Add USB fast charge
+
+---
+ arch/arm64/Kconfig              |   2 +
+ arch/arm64/Makefile             |   1 +
+ arch/arm64/fastcharge/Kconfig   |   6 +++
+ arch/arm64/fastcharge/Makefile  |   1 +
+ arch/arm64/fastcharge/fastchg.c | 105 ++++++++++++++++++++++++++++++++++++++++
+ drivers/usb/phy/phy-msm-usb.c   |  13 +++++
+ include/linux/fastchg.h         |  22 +++++++++
+ include/linux/kernel.h          |   2 -
+ 8 files changed, 150 insertions(+), 2 deletions(-)
+ create mode 100644 arch/arm64/fastcharge/Kconfig
+ create mode 100644 arch/arm64/fastcharge/Makefile
+ create mode 100644 arch/arm64/fastcharge/fastchg.c
+ create mode 100644 include/linux/fastchg.h
+
+diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
+index e0a22c40fc7..5f75bdc998a 100644
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -1137,3 +1137,5 @@ endif
+ source "lib/Kconfig"
+ 
+ source "arch/arm64/mm/Kconfig"
++
++source "arch/arm64/fastcharge/Kconfig"
+diff --git a/arch/arm64/Makefile b/arch/arm64/Makefile
+index adbb78d0ca3..5caeab827bd 100755
+--- a/arch/arm64/Makefile
++++ b/arch/arm64/Makefile
+@@ -61,6 +61,7 @@ core-$(CONFIG_NET) += arch/arm64/net/
+ core-$(CONFIG_KVM) += arch/arm64/kvm/
+ core-$(CONFIG_XEN) += arch/arm64/xen/
+ core-$(CONFIG_CRYPTO) += arch/arm64/crypto/
++core-$(CONFIG_FORCE_FAST_CHARGE) += arch/arm64/fastcharge/
+ libs-y		:= arch/arm64/lib/ $(libs-y)
+ libs-$(CONFIG_EFI_STUB) += drivers/firmware/efi/libstub/
+ 
+diff --git a/arch/arm64/fastcharge/Kconfig b/arch/arm64/fastcharge/Kconfig
+new file mode 100644
+index 00000000000..e7f33ebd040
+--- /dev/null
++++ b/arch/arm64/fastcharge/Kconfig
+@@ -0,0 +1,6 @@
++config FORCE_FAST_CHARGE
++	bool "Force faster charge rate for AC/USB"
++	default y
++	help
++	  This allows users to override default charge rate for both USB and AC
++	  charger input current
+\ No newline at end of file
+diff --git a/arch/arm64/fastcharge/Makefile b/arch/arm64/fastcharge/Makefile
+new file mode 100644
+index 00000000000..742775e4dd8
+--- /dev/null
++++ b/arch/arm64/fastcharge/Makefile
+@@ -0,0 +1 @@
++obj-$(CONFIG_FORCE_FAST_CHARGE) += fastchg.o
+\ No newline at end of file
+diff --git a/arch/arm64/fastcharge/fastchg.c b/arch/arm64/fastcharge/fastchg.c
+new file mode 100644
+index 00000000000..0921f6dc4b8
+--- /dev/null
++++ b/arch/arm64/fastcharge/fastchg.c
+@@ -0,0 +1,105 @@
++/*
++ * Author: Chad Froebel <chadfroebel@gmail.com>
++ *
++ * Port to Nexus 5 : flar2 <asegaert@gmail.com>
++ *
++ * Port to Osprey : engstk <eng.stk@sapo.pt>
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++/*
++ * Possible values for "force_fast_charge" are :
++ *
++ *   0 - Disabled (default)
++ *   1 - Force faster charge
++*/
++
++#include <linux/kobject.h>
++#include <linux/sysfs.h>
++#include <linux/fastchg.h>
++#include <linux/string.h>
++
++int force_fast_charge = 0;
++
++static int __init get_fastcharge_opt(char *ffc)
++{
++	if (strcmp(ffc, "0") == 0) {
++		force_fast_charge = 0;
++	} else if (strcmp(ffc, "1") == 0) {
++		force_fast_charge = 1;
++	} else {
++		force_fast_charge = 0;
++	}
++	return 1;
++}
++
++__setup("ffc=", get_fastcharge_opt);
++
++static ssize_t force_fast_charge_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
++{
++	size_t count = 0;
++	count += sprintf(buf, "%d\n", force_fast_charge);
++	return count;
++}
++
++static ssize_t force_fast_charge_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t count)
++{
++	if (buf[0] >= '0' && buf[0] <= '1' && buf[1] == '\n')
++                if (force_fast_charge != buf[0] - '0')
++		        force_fast_charge = buf[0] - '0';
++
++	return count;
++}
++
++static struct kobj_attribute force_fast_charge_attribute =
++__ATTR(force_fast_charge, 0666, force_fast_charge_show, force_fast_charge_store);
++
++static struct attribute *force_fast_charge_attrs[] = {
++&force_fast_charge_attribute.attr,
++NULL,
++};
++
++static struct attribute_group force_fast_charge_attr_group = {
++.attrs = force_fast_charge_attrs,
++};
++
++/* Initialize fast charge sysfs folder */
++static struct kobject *force_fast_charge_kobj;
++
++int force_fast_charge_init(void)
++{
++	int force_fast_charge_retval;
++
++	force_fast_charge_kobj = kobject_create_and_add("fast_charge", kernel_kobj);
++	if (!force_fast_charge_kobj) {
++			return -ENOMEM;
++	}
++
++	force_fast_charge_retval = sysfs_create_group(force_fast_charge_kobj, &force_fast_charge_attr_group);
++
++	if (force_fast_charge_retval)
++		kobject_put(force_fast_charge_kobj);
++
++	if (force_fast_charge_retval)
++		kobject_put(force_fast_charge_kobj);
++
++	return (force_fast_charge_retval);
++}
++
++void force_fast_charge_exit(void)
++{
++	kobject_put(force_fast_charge_kobj);
++}
++
++module_init(force_fast_charge_init);
++module_exit(force_fast_charge_exit);
++
+diff --git a/drivers/usb/phy/phy-msm-usb.c b/drivers/usb/phy/phy-msm-usb.c
+index 20280e8b0ea..bfe2ba81a92 100644
+--- a/drivers/usb/phy/phy-msm-usb.c
++++ b/drivers/usb/phy/phy-msm-usb.c
+@@ -49,6 +49,10 @@
+ 
+ #include <linux/msm-bus.h>
+ 
++#ifdef CONFIG_FORCE_FAST_CHARGE
++#include <linux/fastchg.h>
++#endif
++
+ #define MSM_USB_BASE	(motg->regs)
+ #define MSM_USB_PHY_CSR_BASE (motg->phy_csr_regs)
+ 
+@@ -1841,6 +1845,15 @@ static void msm_otg_notify_charger(struct msm_otg *motg, unsigned mA)
+ 	if (motg->cur_power == mA)
+ 		return;
+ 
++#ifdef CONFIG_FORCE_FAST_CHARGE
++	if (force_fast_charge > 0 && mA > 0) {
++		mA = IDEV_CHG_MAX;
++		pr_info("USB fast charging is ON\n");
++	} else {
++		pr_info("USB fast charging is OFF\n");
++	}
++#endif
++
+ 	dev_info(motg->phy.dev, "Avail curr from USB = %u\n", mA);
+ 	msm_otg_dbg_log_event(&motg->phy, "AVAIL CURR FROM USB",
+ 			mA, motg->chg_type);
+diff --git a/include/linux/fastchg.h b/include/linux/fastchg.h
+new file mode 100644
+index 00000000000..492dbe051ec
+--- /dev/null
++++ b/include/linux/fastchg.h
+@@ -0,0 +1,22 @@
++/*
++ * Author: Chad Froebel <chadfroebel@gmail.com>
++ *
++ * Port to Osprey : engstk <eng.stk@sapo.pt>
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ */
++
++#ifndef _LINUX_FASTCHG_H
++#define _LINUX_FASTCHG_H
++
++extern int force_fast_charge;
++
++#endif
+\ No newline at end of file
+diff --git a/include/linux/kernel.h b/include/linux/kernel.h
+index 5c1fcdf0415..77431c683b8 100644
+--- a/include/linux/kernel.h
++++ b/include/linux/kernel.h
+@@ -823,7 +823,5 @@ static inline void ftrace_dump(enum ftrace_dump_mode oops_dump_mode) { }
+ 	 /* User perms >= group perms >= other perms */			\
+ 	 BUILD_BUG_ON_ZERO(((perms) >> 6) < (((perms) >> 3) & 7)) +	\
+ 	 BUILD_BUG_ON_ZERO((((perms) >> 3) & 7) < ((perms) & 7)) +	\
+-	 /* Other writable?  Generally considered a bad idea. */	\
+-	 BUILD_BUG_ON_ZERO((perms) & 2) +				\
+ 	 (perms))
+ #endif
